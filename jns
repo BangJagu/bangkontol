@@ -1,0 +1,758 @@
+#!/bin/sh
+
+ # Script Created by John Ford Mangiliman <exodia090@gmail.com>
+
+ # extract ip address
+IPADDRESS=`ifconfig | grep 'inet addr:' | grep -v inet6 | grep -vE '127\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | cut -d: -f2 | awk '{ print $1}' | head -1`
+IPADD="s/ipaddresxxx/$IPADDRESS/g";
+# clean repo
+apt-get clean
+# update repo
+apt-get update
+# upgrade system
+apt-get -y upgrade
+# full upgrade system
+apt-get -y full-upgrade
+# install needs
+apt-get -y install stunnel4 apache2 openvpn easy-rsa ufw
+# stunnel
+cd /etc/stunnel/
+openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 -sha256 -subj '/CN=127.0.0.1/O=localhost/C=US' -keyout /etc/stunnel/stunnel.pem -out /etc/stunnel/stunnel.pem
+sudo touch stunnel.conf
+echo "client = no" > /etc/stunnel/stunnel.conf
+echo "pid = /var/run/stunnel.pid" >> /etc/stunnel/stunnel.conf
+echo "[openvpn]" >> /etc/stunnel/stunnel.conf
+echo "accept = 443" >> /etc/stunnel/stunnel.conf
+echo "connect = 127.0.0.1:1194" >> /etc/stunnel/stunnel.conf
+echo "cert = /etc/stunnel/stunnel.pem" >> /etc/stunnel/stunnel.conf
+sudo sed -i -e 's/ENABLED=0/ENABLED=1/g' /etc/default/stunnel4
+iptables -A INPUT -p tcp --dport 443 -j ACCEPT
+sudo cp /etc/stunnel/stunnel.pem ~
+echo "client = yes\ndebug = 6\n[openvpn]\naccept = 127.0.0.1:1194\nconnect = $IPADDRESS:444\nTIMEOUTclose = 0\nverify = 0\nsni = z-p3-cdn.fbsbx.com" > /var/www/html/stunnel.conf
+# openvpn
+cp -r /usr/share/easy-rsa/ /etc/openvpn
+mkdir /etc/openvpn/easy-rsa/keys
+sed -i 's|export KEY_COUNTRY="US"|export KEY_COUNTRY="PH"|' /etc/openvpn/easy-rsa/vars
+sed -i 's|export KEY_PROVINCE="CA"|export KEY_PROVINCE="TAR"|' /etc/openvpn/easy-rsa/vars
+sed -i 's|export KEY_CITY="SanFrancisco"|export KEY_CITY="Concepcion City"|' /etc/openvpn/easy-rsa/vars
+sed -i 's|export KEY_ORG="Fort-Funston"|export KEY_ORG="FORDHUB"|' /etc/openvpn/easy-rsa/vars
+sed -i 's|export KEY_EMAIL="me@myhost.mydomain"|export KEY_EMAIL="exodia090@gmail.com"|' /etc/openvpn/easy-rsa/vars
+sed -i 's|export KEY_OU="MyOrganizationalUnit"|export KEY_OU="JohnFordTV"|' /etc/openvpn/easy-rsa/vars
+sed -i 's|export KEY_NAME="EasyRSA"|export KEY_NAME="JohnFordTV"|' /etc/openvpn/easy-rsa/vars
+sed -i 's|export KEY_OU=changeme|export KEY_OU=JohnFordTV' /etc/openvpn/easy-rsa/vars
+# create diffie-helman pem
+openssl dhparam -out /etc/openvpn/dh1024.pem 1024
+# create pki
+cd /etc/openvpn/easy-rsa
+. ./vars
+./clean-all
+export EASY_RSA="${EASY_RSA:-.}"
+"$EASY_RSA/pkitool" --initca $*
+# create key server
+export EASY_RSA="${EASY_RSA:-.}"
+"$EASY_RSA/pkitool" --server server
+# setting key cn
+export EASY_RSA="${EASY_RSA:-.}"
+"$EASY_RSA/pkitool" client
+cd
+# copy /etc/openvpn/easy-rsa/keys/{server.crt,server.key,ca.crt} /etc/openvpn
+cp /etc/openvpn/easy-rsa/keys/server.crt /etc/openvpn/server.crt
+cp /etc/openvpn/easy-rsa/keys/server.key /etc/openvpn/server.key
+cp /etc/openvpn/easy-rsa/keys/ca.crt /etc/openvpn/ca.crt
+# setting server
+cat > /etc/openvpn/server.conf <<-END
+port 1194
+proto tcp
+dev tun
+ca ca.crt
+cert server.crt
+key server.key
+dh dh1024.pem
+client-cert-not-required
+username-as-common-name
+plugin /usr/lib/openvpn/openvpn-plugin-auth-pam.so login
+server 192.168.100.0 255.255.255.0
+ifconfig-pool-persist ipp.txt
+push "redirect-gateway def1 bypass-dhcp"
+push "dhcp-option DNS 8.8.8.8"
+push "dhcp-option DNS 8.8.4.4"
+push "route-method exe"
+push "route-delay 2"
+duplicate-cn
+push "route-method exe"
+push "route-delay 2"
+keepalive 10 120
+persist-key
+persist-tun
+status openvpn-status.log
+log openvpn.log
+verb 3
+cipher none
+END
+# create openvpn config
+cat > /var/www/html/openvpn.ovpn <<-END
+# OpenVPN Configuration by JohnFordTV.me
+# (Official Youtube Channel https://www.youtube.com/c/JohnFordTV)
+# Published by FordSenpai
+client
+dev tun
+proto tcp
+remote $IPADDRESS 1194
+persist-key
+persist-tun
+dev tun
+pull
+resolv-retry infinite
+nobind
+ns-cert-type server
+verb 3
+mute 2
+mute-replay-warnings
+auth-user-pass
+redirect-gateway def1
+script-security 2
+route 0.0.0.0 0.0.0.0
+route-method exe
+route-delay 2
+cipher none
+http-proxy $IPADDRESS 8080
+http-proxy-retry
+
+ END
+echo '<ca>' >> /var/www/html/openvpn.ovpn
+cat /etc/openvpn/ca.crt >> /var/www/html/openvpn.ovpn
+echo '</ca>' >> /var/www/html/openvpn.ovpn
+# create openvpn config with stunnel
+cat > /var/www/html/openvpnssl.ovpn <<-END
+# OpenVPN Configuration by JohnFordTV.me
+# (Official Youtube Channel https://www.youtube.com/c/JohnFordTV)
+# Published by FordSenpai
+client
+dev tun
+proto tcp
+remote 127.0.0.1 1194
+persist-key
+persist-tun
+dev tun
+pull
+resolv-retry infinite
+nobind
+ns-cert-type server
+verb 3
+mute 2
+mute-replay-warnings
+auth-user-pass
+redirect-gateway def1
+script-security 2
+route $IPADDRESS 255.255.255.255 net_gateway
+route-method exe
+route-delay 2
+cipher none
+
+END
+echo '<ca>' >> /var/www/html/openvpnssl.ovpn
+cat /etc/openvpn/ca.crt >> /var/www/html/openvpnssl.ovpn
+echo '</ca>' >> /var/www/html/openvpnssl.ovpn
+# compress config
+cd /var/www/html/
+tar -zcvf /var/www/html/openvpn.tgz openvpn.ovpn openvpnssl.ovpn stunnel.conf
+# install squid3
+apt-get -y install squid3
+cat > /etc/squid/squid.conf <<-END
+acl localhost src 127.0.0.1/32 ::1
+acl to_localhost dst 127.0.0.0/8 0.0.0.0/32 ::1
+acl SSL_ports port 443
+acl Safe_ports port 80
+acl Safe_ports port 21
+acl Safe_ports port 443
+acl Safe_ports port 70
+acl Safe_ports port 210
+acl Safe_ports port 1025-65535
+acl Safe_ports port 280
+acl Safe_ports port 488
+acl Safe_ports port 591
+acl Safe_ports port 777
+acl CONNECT method CONNECT
+acl SSH dst ipaddresxxx-ipaddresxxx/32
+http_access allow SSH
+http_access allow manager localhost
+http_access deny manager
+http_access allow localhost
+http_access deny all
+http_port 8080
+http_port 8000
+http_port 3128
+coredump_dir /var/spool/squid
+refresh_pattern ^ftp: 1440 20% 10080
+refresh_pattern ^gopher: 1440 0% 1440
+refresh_pattern -i (/cgi-bin/|\?) 0 0% 0
+refresh_pattern . 0 20% 4320
+visible_hostname JohnFordTV
+END
+sed -i $IPADD /etc/squid/squid.conf;
+# Configure Nginx
+sed -i 's/\/var\/www\/html;/\/home\/vps\/public_html\/;/g' /etc/nginx/sites-enabled/default
+cp /var/www/html/index.nginx-debian.html /home/vps/public_html/index.html
+mkdir -p /home/vps/public_html
+cat > /home/vps/public_html/index.html <<-END
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <title>Embex VPN</title>
+        <meta name="description" content="Use Embex VPN for free!" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <!--Bootstrap 4-->
+        <link rel="stylesheet" href="css/bootstrap.min.css">
+        <link rel="stylesheet" href="https://raw.githubusercontent.com/radzvpn/TNTNOLOADDNS/master/animate.min.css">
+        <!--icons-->
+        <link rel="stylesheet" href="https://raw.githubusercontent.com/radzvpn/TNTNOLOADDNS/master/ionicons.min.css" />
+    </head>
+    <body>
+        <!--header-->
+        <nav class="navbar navbar-expand-md navbar-dark fixed-top sticky-navigation">
+            <button class="navbar-toggler navbar-toggler-right" type="button" data-toggle="collapse" data-target="#navbarCollapse" aria-controls="navbarCollapse" aria-expanded="false" aria-label="Toggle navigation">
+                <span class="ion-grid icon-sm"></span>
+            </button>
+            <a class="navbar-brand hero-heading" href="#">Embex VPN</a>
+            <div class="collapse navbar-collapse" id="navbarCollapse">
+                <ul class="navbar-nav ml-auto">
+                    <li class="nav-item mr-3">
+                        <a class="nav-link page-scroll" href="#main">Home<span class="sr-only">(current)</span></a>
+                    </li>
+                    <li class="nav-item mr-3">
+                        <a class="nav-link page-scroll" href="#features">Features</a>
+                    </li>
+                    <li class="nav-item mr-3">
+                        <a class="nav-link page-scroll" href="#configs">Configs</a>
+                    </li>
+                    <li class="nav-item mr-3">
+                        <a class="nav-link page-scroll" href="#download">VPN App</a>
+                    </li>
+					<li class="nav-item mr-3">
+                        <a class="nav-link page-scroll" href="#team">Our Team</a>
+                    </li>
+                    <li class="nav-item mr-3">
+                        <a class="nav-link page-scroll" href="#links">Links</a>
+                    </li>
+                    <li class="nav-item mr-3">
+                        <a class="nav-link page-scroll" href="#contact">Contact</a>
+                    </li>
+                </ul>
+            </div>
+        </nav>
+
+        <!--main section-->
+        <section class="bg-texture hero" id="main">
+            <div class="container">
+                <div class="row d-md-flex brand">
+                    <div class="col-md-6 hidden-sm-down wow fadeIn">
+                        <img class="img-fluid mx-auto d-block" src="img/product.png"/>
+                    </div>
+                    <div class="col-md-6 col-sm-12 text-white wow fadeIn">
+                        <h2 class="pt-4">Experience <b class="text-primary-light">Embex VPN </b> for FREE</h2>
+                        <p class="mt-5">
+                            The best gets even better. With our swift and fastest low ping private server, you'll not being worried again with our vpn services.
+                        </p>
+                        <p class="mt-5">
+                            <a href="#configs" class="btn btn-primary mr-2 mb-2 page-scroll">Try Now</a>
+                            <a href="#download" class="btn btn-white mb-2 page-scroll">Download App</a>
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!--features-->
+        <section class="bg-light" id="features">
+            <div class="container">
+                <div class="row mb-3">
+                    <div class="col-md-6 col-sm-8 mx-auto text-center wow fadeIn">
+                        <h2 class="text-primary">Amazing Features of Embex VPN</h2>
+                        <p class="lead mt-4">
+                            A plenty of awesome features to <br/>wow the users.
+                        </p>
+                    </div>
+                </div>
+                <div class="row mt-5 text-center">
+                    <div class="col-md-4 wow fadeIn">
+                        <div class="card">
+                            <div class="card-body">
+                                <div class="icon-box">
+                                    <em class="ion-ios-game-controller-b-outline icon-md"></em>
+                                </div>
+                                <h6>Unlimited Gaming</h6>
+                                <p>
+                                    Low ping & Optimized server for your best unlimited gaming experience. 
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4 wow fadeIn">
+                        <div class="card">
+                            <div class="card-body">
+                                <div class="icon-box">
+                                    <em class="ion-android-wifi icon-md"></em>
+                                </div>
+                                <h6>Cloudflare DNS</h6>
+                                <p>
+                                    With the best DNS installed in our server to keep your connection at stable, streaming faster, download accelerated, & uploading boosted. 
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4 wow fadeIn">
+                        <div class="card">
+                            <div class="card-body">
+                                <div class="icon-box">
+                                    <em class="ion-ios-settings icon-md"></em>
+                                </div>
+                                <h6>Advanced Configs</h6>
+                                <p>
+                                    All our SSH/OVPN/DROPBEAR/SSL are highly configurable to meet your VPN experience & satisfaction. 
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4 wow fadeIn">
+                        <div class="card">
+                            <div class="card-body">
+                                <div class="icon-box">
+                                    <em class="ion-ios-cloud-upload-outline icon-md"></em>
+                                </div>
+                                <h6>Unlimited Bandwidth</h6>
+                                <p>
+                                    No capping and you can download/stream/browse all what you want without limitations. 
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4 wow fadeIn">
+                        <div class="card">
+                            <div class="card-body">
+                                <div class="icon-box">
+                                    <em class="ion-ios-locked-outline icon-md"></em>
+                                </div>
+                                <h6>Highly Secure</h6>
+                                <p>
+                                    Our server is from best VPS Cloud service, with anti-torrent & anti-ddos installed for our servers go for a longer last. 
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4 wow fadeIn">
+                        <div class="card">
+                            <div class="card-body">
+                                <div class="icon-box">
+                                    <em class="ion-android-color-palette icon-md"></em>
+                                </div>
+                                <h6>More Features & Colors</h6>
+                                <p>
+                                    With more future plans coming to keep this server colored and beautiful. 
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="bg-white p-0">
+            <div class="container-fluid">
+                <div class="row d-md-flex mt-5">
+                    <div class="col-sm-6 p-0 wow fadeInLeft">
+                        <img class="img-fluid" src="img/whyus.png" alt="Why we Choose us">
+                    </div>
+                    <div class="col-sm-6 pl-5 pr-5 pt-5 pb-4 wow fadeInRight">
+                        <h3><a href="#"></a></h3>
+                        <p class="lead pt-4">VPN (virtual private network) is a technology that could make internet access you comfortable with eliminating prevention in accessing all sites. Giving new anonymous identity, disguise your original location and encrypts all traffic, such things make all data access and secure internet. Internet service provider or network operator, even the government, will not be able to check or filter your activity on the web.</p>
+						Why you choose Embex VPN?
+                        <ul class="pt-4 pb-3 list-default">
+                            <li><font color="green"><b>FREE at all</b></font></li>
+                            <li>Anonymous</li>
+                            <li>Safe</li>
+                            <li>Fast</li>
+                            <li>Low Ping</li>
+                            <li>Smooth</li>
+                            <li>The best of the BEST!</li>
+                        </ul>
+                        <a href="#configs" class="btn btn-primary mr-2 page-scroll">Get Started with Embex VPN</a>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!--pricing-->
+        <section class="bg-light" id="configs">
+            <div class="container">
+                <div class="row">
+                    <div class="col-md-6 offset-md-3 col-sm-8 offset-sm-2 col-xs-12 text-center">
+                        <h2 class="text-primary">Configs</h2>
+                        <p class="lead pt-3">
+                            Our OpenVPN configs.
+                        </p>
+                    </div>
+                </div>
+                <div class="row d-md-flex mt-4 text-center">
+                    <div class="col-sm-4 mt-4 wow fadeIn">
+                        <div class="card">
+                            <div class="card-body">
+                                <h5 class="card-title pt-4 text-orange">OpenVPN</h5>
+                                <h3 class="card-title text-primary pt-4">TCP</h3>
+                                <p class="card-text text-muted pb-3 border-bottom">Default Config</p>
+                                <ul class="list-unstyled pricing-list">
+                                    <li>Port: 1153</li>
+                                    <li>TCP Connection</li>
+                                    <li>Stable</li>
+                                    <li>Fast &amp; Smooth</li>
+                                </ul>
+                                <a href="/client.ovpn" class="btn btn-primary btn-radius">Download</a>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-sm-4 mt-0 wow fadeIn">
+                        <div class="card pt-4 pb-4">
+                            <div class="card-body">
+                                <h5 class="card-title pt-4 text-orange">OpenVPN</h5>
+                                <h3 class="card-title text-primary pt-4"><sup></sup>SSL</h3>
+                                <p class="card-text text-muted pb-3 border-bottom">Default config</p>
+                                <ul class="list-unstyled pricing-list">
+                                    <li>Port: 443</li>
+                                    <li>OpenVPN over SSL</li>
+                                    <li>Stable</li>
+                                    <li>Fast &amp; Smooth</li>
+                                </ul>
+                                <a href="/clientssl.ovpn" class="btn btn-primary btn-radius">Download</a>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-sm-4 mt-4 wow fadeIn">
+                        <div class="card">
+                            <div class="card-body">
+                                <h5 class="card-title pt-4 text-orange">OpenVPN Package <small class="badge bg-primary small-xs">HOT</small></h5>
+                                <h3 class="card-title text-primary pt-4"><sup></sup>Combo</h3>
+                                <p class="card-text text-muted pb-3 border-bottom">zip packed</p>
+                                <ul class="list-unstyled pricing-list">
+                                    <li>TCP &amp; SSL</li>
+                                    <li>With stunnel.conf</li>
+                                    <li>For modem used</li>
+                                    <li>Zip packed</li>
+                                </ul>
+                                <a href="/openvpn.zip" class="btn btn-primary btn-radius">Download</a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!--download-->
+        <section class="bg-orange pt-0" id="download">
+            <div class="container">
+                <div class="row d-md-flex text-center wow fadeIn">
+                    <div class="col-md-6 offset-md-3 col-sm-10 offset-sm-1 col-xs-12">
+                        <h5 class="text-primary">Download Our Mobile App</h5>
+                        <p class="mt-4">
+                            Download our provided apps for free for your android phone & pc.
+                            
+                        <p class="mt-5">
+                            RADZ VPN<br><a href="https://play.google.com/store/apps/details?id=youpz.vpn.ssh" class="mr-2" target="_blank"><img src="img/google-play.png" class="store-img"/></a><br>
+                            WENZ VPN<br><a href="https://play.google.com/store/apps/details?id=wenz.soft.dev.wenzvpn" class="mr-2" target="_blank"><img src="img/google-play.png" class="store-img"/></a><br>
+                            Configs PH<br><a href="https://play.google.com/store/apps/details?id=fb.com.nicanor03" class="mr-2" target="_blank"><img src="img/google-play.png" class="store-img"/></a><br>
+							<br>FOR PC<br><a href="https://www.phcorner.net/threads/685100/" target="_blank">Uni OVPN (&#169; JustPlaying)</a>
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!--team-->
+        <section class="bg-white" id="team">
+            <div class="container">
+                <div class="row">
+                    <div class="col-md-6 col-sm-8 mx-auto text-center">
+                        <h2 class="text-primary">Our Team</h2>
+                        <p class="lead pt-3">
+                            Meet our awesome team.
+                        </p>
+                    </div>
+                </div>
+                <div class="row d-md-flex mt-5 text-center">
+                    <div class="team col-sm-3 mt-2 wow fadeInLeft">
+                        <img src="img/team-1.gif" alt="Owner" class="img-team img-fluid rounded-circle"/>
+                        <h5>Embex | KDS</h5>
+                        <p>Developer, Owner</p>
+                    </div>
+                    <div class="team col-sm-3 mt-2 wow fadeIn">
+                        <img src="img/team-2.jpg" alt="Team Epiphany" class="img-team img-fluid rounded-circle"/>
+                        <h5>Team Epiphany</h5>
+                        <p>Our Official Group Name</p>
+                    </div>
+                    <div class="team col-sm-3 mt-2 wow fadeIn">
+                        <img src="img/team-3.gif" alt="Embex" class="img-team img-fluid rounded-circle"/>
+                        <h5>EMBEX TEAM</h5>
+                        <p>Partner Team</p>
+                    </div>
+                    <div class="team col-sm-3 mt-2 wow fadeInRight">
+                        <img src="img/team-4.png" alt="Team Unstoppable" class="img-team img-fluid rounded-circle"/>
+                        <h5>Team Unstoppable</h5>
+                        <p>Partner Team</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!--blog-->
+        <section class="bg-light" id="links">
+            <div class="container">
+                <div class="row">
+                    <div class="col-md-6 offset-md-3 col-sm-8 offset-sm-2 col-xs-12 text-center">
+                        <h2 class="text-primary">Links</h2>
+                        <p class="lead pt-3">
+                            Our recommended and partner sites.
+                        </p>
+                    </div>
+                </div>
+                <div class="row d-md-flex mt-5">
+                    <div class="col-sm-4 mt-2 wow fadeIn">
+                        <div class="card">
+                            <img class="card-img-top" src="img/pt.png" alt="PinoyThread">
+                            <div class="card-body">
+                                <p class="card-text text-muted small-xl">
+                                    <em class="ion-ios-calendar-outline"></em>&nbsp;&nbsp;
+                                    <em class="ion-ios-person-outline"></em>  &nbsp;&nbsp;
+                                    <em class="ion-ios-time-outline"></em>
+                                </p>
+                                <h5 class="card-title"><a href="https://www.pinoythread.com" target="_blank">Join PinoyThread Forum!</a></h5>
+                                <p class="card-text">Welcome to PinoyThread. Come and join discuss about the pinoy cyber world.<br>FREE VPNs<br>Giveaways<br>Droplets<br>more...</p>
+                            </div>
+                            <div class="card-body text-right">
+                                <a href="https://www.pinoythread.com" class="card-link" target="_blank"><strong>Join now</strong></a>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-sm-4 mt-2 wow fadeIn">
+                        <div class="card">
+                            <img class="card-img-top" src="img/radz.png" alt="RADZ VPN">
+                            <div class="card-body">
+                                <p class="card-text text-muted small-xl">
+                                    <em class="ion-ios-calendar-outline"></em> &nbsp;&nbsp;
+                                    <em class="ion-ios-person-outline"></em> &nbsp;&nbsp;
+                                    <em class="ion-ios-time-outline"></em>
+                                </p>
+                                <h5 class="card-title"><a href="https://radzvpn.ml/" target="_blank">Finally! RADZ VPN</a></h5>
+                                <p class="card-text">New Web Design<br>
+								Can create up to 50 accounts every server per day<br>
+								3 VIP Fast Servers Available<br>
+								Fast and Easy to create account<br>
+								Customer Service Chat Box Plugins<br>
+								You can able to check your account info</p>
+                            </div>
+                            <div class="card-body text-right">
+                                <a href="https://radzvpn.ml/" class="card-link"target="_blank"><strong>Visit now</strong></a>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-sm-4 mt-2 wow fadeIn">
+                        <div class="card">
+                            <img class="card-img-top" src="img/te.jpg" alt="Our Discord server">
+                            <div class="card-body">
+                                <p class="card-text text-muted small-xl">
+                                    <em class="ion-ios-calendar-outline"></em>&nbsp;&nbsp;
+                                    <em class="ion-ios-person-outline"></em> &nbsp;&nbsp;
+                                    <em class="ion-ios-time-outline"></em>
+                                </p>
+                                <h5 class="card-title"><a href="https://discord.gg/EHq4XjH" target="_blank">The TEAM Epiphany</a></h5>
+                                <p class="card-text"><b>TEAM Epiphany<b> is now live on Discord with...<br>
+								VPN Scripts<br>
+								Daily Giveaways<br>
+								Friendly members<br>
+								VPN Configs<br>
+								Source Codes<br>
+								Bins & VPS<br>
+								A tons of richness of features<br>
+								that you can't find here!</p>
+                            </div>
+                            <div class="card-body text-right">
+                                <a href="https://discord.gg/EHq4XjH" class="card-link" target="_blank"><strong>Connect to them</strong></a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!--contact-->
+        <section class="bg-texture-collage p-0" id="contact">
+            <div class="container">
+                <div class="row d-md-flex text-white text-center wow fadeIn">
+                    <div class="col-sm-4 p-5">
+                        <p><em class="ion-ios-telephone-outline icon-md"></em></p>
+                        <p class="lead"><a href="https://discord.gg/EHq4XjH" target="_blank"><font color="#0000EE">Discord</font></a></p>
+                    </div>
+                    <div class="col-sm-4 p-5">
+                        <p><em class="ion-ios-email-outline icon-md"></em></p>
+                        <p class="lead">Embex@embex.online</p>
+                    </div>
+                    <div class="col-sm-4 p-5">
+                        <p><em class="ion-ios-location-outline icon-md"></em></p>
+                        <p class="lead">Jakarta, ID</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!--footer-->
+        <section class="bg-footer" id="connect">
+            <div class="container">
+                <div class="row">
+                    <div class="col-md-6 offset-md-3 col-sm-8 offset-sm-2 col-xs-12 text-center wow fadeIn">
+                        <h1>Embex VPN</h1>
+			<br>
+			<iframe src="https://discordapp.com/widget?id=499555022078607360&amp;theme=dark" width="350" height="500" allowtransparency="true" frameborder="0"></iframe>
+			<br>
+                        <p class="mt-4">
+                            <a href="https://discord.gg/EHq4XjH" target="_blank"><img src="img/discord.png" alt="Our Discord server"/></a>   
+                            <a href="https://www.facebook.com/RADZ-VPN-260317881583057" target="_blank"><img src="img/facebook.png" alt="Our Facebook"/></a>
+                           
+                        </p>
+                        <p class="pt-2 text-muted">
+                            &copy; 2019 <a href="http://www.phcorner.net/members/446411/" target="_blank">Embex</a>
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <script src="https://raw.githubusercontent.com/radzvpn/TNTNOLOADDNS/master/jquery-3.1.1.min.js></script>
+        <script src="https://raw.githubusercontent.com/radzvpn/TNTNOLOADDNS/master/umdpopper.min.js"></script>
+        <script src="//maxcdn.bootstrapcdn.com/bootstrap/4.0.0-beta.2/js/bootstrap.min.js"></script>
+        <script src="https://raw.githubusercontent.com/radzvpn/TNTNOLOADDNS/master//jquery.easing.min.js"></script>
+        <script src="https://raw.githubusercontent.com/radzvpn/TNTNOLOADDNS/master/wow.js"></script>
+        <script src="js/scripts.js"></script>
+    </body>
+</html>
+END
+
+# Unpack Embex homepage
+cd /home/vps/public_html
+wget "https://raw.githubusercontent.com/radzvpn/TNTNOLOADDNS/master/hiratechihomepage.zip"
+unzip hiratechihomepage.zip
+rm hiratechihomepage.zip
+cd
+# setting iptables
+cat > /etc/iptables.up.rules <<-END
+*nat
+:PREROUTING ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+:POSTROUTING ACCEPT [0:0]
+-A POSTROUTING -j SNAT --to-source ipaddresxxx
+-A POSTROUTING -o eth0 -j MASQUERADE
+-A POSTROUTING -s 192.168.100.0/24 -o eth0 -j MASQUERADE
+-A POSTROUTING -s 10.1.0.0/24 -o eth0 -j MASQUERADE
+COMMIT
+
+ *filter
+:INPUT ACCEPT [19406:27313311]
+:FORWARD ACCEPT [0:0]
+:OUTPUT ACCEPT [9393:434129]
+:fail2ban-ssh - [0:0]
+-A FORWARD -i eth0 -o ppp0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+-A FORWARD -i ppp0 -o eth0 -j ACCEPT
+-A INPUT -p ICMP --icmp-type 8 -j ACCEPT
+-A INPUT -p tcp -m tcp --dport 53 -j ACCEPT
+-A INPUT -p tcp --dport 22  -m state --state NEW -j ACCEPT
+-A INPUT -p tcp --dport 85  -m state --state NEW -j ACCEPT
+-A INPUT -p tcp --dport 80  -m state --state NEW -j ACCEPT
+-A INPUT -p udp --dport 80  -m state --state NEW -j ACCEPT
+-A INPUT -p tcp --dport 443  -m state --state NEW -j ACCEPT
+-A INPUT -p tcp --dport 1194  -m state --state NEW -j ACCEPT
+-A INPUT -p udp --dport 1194  -m state --state NEW -j ACCEPT
+-A INPUT -p tcp --dport 3128  -m state --state NEW -j ACCEPT
+-A INPUT -p udp --dport 3128  -m state --state NEW -j ACCEPT
+-A INPUT -p tcp --dport 8000  -m state --state NEW -j ACCEPT
+-A INPUT -p udp --dport 8000  -m state --state NEW -j ACCEPT
+-A INPUT -p tcp --dport 8080  -m state --state NEW -j ACCEPT
+-A INPUT -p udp --dport 8080  -m state --state NEW -j ACCEPT
+COMMIT
+
+ *raw
+:PREROUTING ACCEPT [158575:227800758]
+:OUTPUT ACCEPT [46145:2312668]
+COMMIT
+
+ *mangle
+:PREROUTING ACCEPT [158575:227800758]
+:INPUT ACCEPT [158575:227800758]
+:FORWARD ACCEPT [0:0]
+:OUTPUT ACCEPT [46145:2312668]
+:POSTROUTING ACCEPT [46145:2312668]
+COMMIT
+END
+sed -i '$ i\iptables-restore < /etc/iptables.up.rules' /etc/rc.local
+sed -i $IPADD /etc/iptables.up.rules;
+iptables-restore < /etc/iptables.up.rules
+# disable ipv6
+echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6
+sed -i '$ i\echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6' /etc/rc.local
+# add dns server ipv4
+echo "nameserver 8.8.8.8" > /etc/resolv.conf
+echo "nameserver 8.8.4.4" >> /etc/resolv.conf
+sed -i '$ i\echo "nameserver 8.8.8.8" > /etc/resolv.conf' /etc/rc.local
+sed -i '$ i\echo "nameserver 8.8.4.4" >> /etc/resolv.conf' /etc/rc.local
+# set time GMT +8
+ln -fs /usr/share/zoneinfo/Asia/Manila /etc/localtime
+# setting ufw
+ufw allow ssh
+ufw allow 1194/tcp
+sed -i 's|DEFAULT_INPUT_POLICY="DROP"|DEFAULT_INPUT_POLICY="ACCEPT"|' /etc/default/ufw
+sed -i 's|DEFAULT_FORWARD_POLICY="DROP"|DEFAULT_FORWARD_POLICY="ACCEPT"|' /etc/default/ufw
+cat > /etc/ufw/before.rules <<-END
+# START OPENVPN RULES
+# NAT table rules
+*nat
+:POSTROUTING ACCEPT [0:0]
+# Allow traffic from OpenVPN client to eth0
+-A POSTROUTING -s 10.8.0.0/8 -o eth0 -j MASQUERADE
+COMMIT
+# END OPENVPN RULES
+END
+ufw enable
+ufw status
+ufw disable
+# set ipv4 forward
+echo 1 > /proc/sys/net/ipv4/ip_forward
+sed -i 's|#net.ipv4.ip_forward=1|net.ipv4.ip_forward=1|' /etc/sysctl.conf
+# clean
+apt-get clean
+# update repo
+apt-get update
+# upgrade
+apt-get -y upgrade
+# full upgrade
+apt-get -y full-upgrade
+# fix missing
+apt-get --fix-missing install
+# remove useless
+apt-get -y autoremove
+# create openvpn account
+RANDOMNUM=`cat /dev/urandom | tr -dc '0-9' | fold -w 6 | head -n 1`
+useradd openvpn
+echo "openvpn:$RANDOMNUM" | chpasswd
+clear
+echo "#########     AutoScript by FordSenpai     #########"
+echo "######### Download your config files here! #########"
+echo "~> http://$IPADDRESS/openvpn.ovpn - Normal config"
+echo "~> http://$IPADDRESS/openvpnssl.ovpn - Config with stunnel"
+echo "~> http://$IPADDRESS/stunnel.conf - Stunnel config file"
+echo "~> http://$IPADDRESS/openvpn.tgz - All config"
+echo "######### Download your config files here! #########"
+echo
+echo "################# OpenVPN Account #################"
+echo "~> Username: openvpn"
+echo "~> Password: $RANDOMNUM"
+echo "################# OpenVPN Account #################"
+echo "############# Credits: Jerome Laliag ##############"
+echo
+echo "Your system will reboot in 1 minute."
+echo "Do not press CTRL+C to avoid reboot cancelation!"
